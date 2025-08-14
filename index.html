@@ -1,12 +1,9 @@
-<!-- =========================
-File: index.html
-========================= -->
 <!doctype html>
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ポートフォリオ・グループ集計（FMPプロキシ / Finnhub対応）</title>
+  <title>ポートフォリオ・グループ集計（FMPプロキシ / Finnhub対応 / 円換算）</title>
   <style>
     :root{ --bg:#0b0b0b; --fg:#f5f5f5; --card:#141414; --muted:#9aa0a6; --line:#2a2a2a; --accent:#6366f1; --ok:#22c55e; --warn:#eab308; --err:#ef4444 }
     [data-theme="light"]{ --bg:#fafafa; --fg:#0b0b0b; --card:#ffffff; --muted:#6b7280; --line:#e5e7eb; --accent:#4f46e5; --ok:#16a34a; --warn:#ca8a04; --err:#dc2626 }
@@ -52,11 +49,12 @@ File: index.html
 <body>
   <div class="container">
     <header>
-      <h1>ポートフォリオ・グループ集計 <span class="muted" style="font-size:14px">（FMPプロキシ / Finnhub対応）</span></h1>
+      <h1>ポートフォリオ・グループ集計 <span class="muted" style="font-size:14px">（FMPプロキシ / Finnhub対応 / 円換算）</span></h1>
       <div class="toolbar">
         <button id="themeBtn" class="switch" title="テーマ切替">🌙/☀️</button>
         <button id="settingsBtn" class="btn-outline">⚙️ 設定</button>
         <button id="refreshAllBtn" class="btn-outline">🔄 すべて更新</button>
+        <button id="shareBtn" class="btn-outline">🔗 共有リンク</button>
         <button id="sampleBtn" class="btn-ghost">サンプル投入</button>
         <button id="addGroupBtn" class="btn">＋ グループ追加</button>
       </div>
@@ -64,8 +62,9 @@ File: index.html
 
     <div class="row">
       <div class="card metric">
-        <div class="label">総資産 (全グループ)</div>
+        <div class="label">総資産 (全グループ) 〈円換算〉</div>
         <div id="grandTotal" class="value">¥0</div>
+        <div class="muted" style="margin-top:6px;font-size:12px" id="fxNote"></div>
       </div>
       <div class="card">
         <div class="label">データ管理</div>
@@ -77,14 +76,14 @@ File: index.html
         <div class="toolbar" style="margin-top:8px">
           <button id="clearBtn" class="btn-outline">🧹 リセット（保存データ削除）</button>
         </div>
-        <div class="muted" style="font-size:13px;margin-top:6px">自動保存: <span class="kbd">localStorage</span>（破損時は自動復旧）</div>
+        <div class="muted" style="font-size:13px;margin-top:6px">自動保存: <span class="kbd">localStorage</span></div>
       </div>
       <div class="card">
         <div class="label">使い方</div>
         <ul style="margin:6px 0 0 18px">
           <li>ティッカー（例：<span class="kbd">3350</span> / <span class="kbd">AAPL</span>）と株数を入力→<strong>🔄 価格取得</strong>。</li>
-          <li>行ごとに<strong>金額</strong>を計算、下部に<strong>グループ合計</strong>。総資産は左上。</li>
-          <li>株価は手動上書きOK。保存は自動。JSONのエクスポート/インポート対応。</li>
+          <li>株価は銘柄の通貨で表示、<strong>金額は常に円換算</strong>。</li>
+          <li>日本株4桁は自動で <span class="kbd">.T</span> / <span class="kbd">TSE:</span> に変換。全角OK。</li>
         </ul>
       </div>
     </div>
@@ -118,7 +117,8 @@ File: index.html
         <span id="testConnResult" class="muted" style="font-size:13px"></span>
       </div>
       <p class="muted" style="font-size:13px;margin-top:6px">
-        * 日本株コードは自動で最適形式に変換（FMP: <span class="kbd">3350.T</span> / Finnhub: <span class="kbd">TSE:3350</span>）。全角でもOK。
+        * 日本株コードは自動で最適形式に変換（FMP: <span class="kbd">3350.T</span> / Finnhub: <span class="kbd">TSE:3350</span>）。<br/>
+        * 米株の金額は <span class="kbd">USDJPY</span> レートで円換算します（FMPプロキシ使用）。
       </p>
       <div class="toolbar" style="justify-content:flex-end;margin-top:8px">
         <button value="cancel" class="btn-outline">閉じる</button>
@@ -128,26 +128,39 @@ File: index.html
   </dialog>
 
   <script>
-    const APP_VERSION = 7;
+    const APP_VERSION = 9; // 円換算対応
     const STORAGE_KEY  = `portfolio-groups.v${APP_VERSION}`;
     const SETTINGS_KEY = `portfolio-settings.v${APP_VERSION}`;
     const THEME_KEY    = "portfolio-theme";
 
     const yen = new Intl.NumberFormat("ja-JP", { style: "currency", currency: "JPY" });
+    const usd = new Intl.NumberFormat("en-US",  { style: "currency", currency: "USD" });
     const uid = () => Math.random().toString(36).slice(2, 10);
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+    // ----- URL params (共有リンクなど)
+    const Q = new URLSearchParams(location.search);
+    const AUTO_FETCH = Q.get('autofetch') === '1';
+    const DISABLE_PERSIST = Q.get('persist') === '0';
+
+    // ----- Helpers / Normalize
     function toHalfWidth(s){
       return String(s||"")
         .replace(/[Ａ-Ｚａ-ｚ０-９．：]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
         .replace(/　/g, " ");
     }
     function isJPCode(t){ return /^[0-9]{4}$/.test(t); }
+    function inferCurrency(input){
+      const t = toHalfWidth(input||"").trim().toUpperCase();
+      if (!t) return "JPY";
+      if (isJPCode(t) || /\.T$/.test(t) || t.startsWith("TSE:")) return "JPY";
+      return "USD"; // デフォルト：米株想定
+    }
     function normalizeFor(provider, input){
       const t = toHalfWidth(input||"").trim().toUpperCase();
       if (!t) return t;
       if (provider === "fmp_proxy"){ if (isJPCode(t)) return `${t}.T`; return t; }
-      if (provider === "finnhub"){ if (isJPCode(t)) return `TSE:${t}`; return t; }
+      if (provider === "finnhub"){  if (isJPCode(t)) return `TSE:${t}`; return t; }
       return t;
     }
     function finnhubCandidates(input){
@@ -165,192 +178,308 @@ File: index.html
       return [...new Set(arr)];
     }
 
-    function safeLoad(key){ try{ const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; } catch(e){ try{ localStorage.removeItem(key) }catch{}; return null; } }
-    function safeSave(key, value){ try{ localStorage.setItem(key, JSON.stringify(value)) }catch{} }
+    function safeLoad(key){
+      try{ const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; }
+      catch(e){ try{ localStorage.removeItem(key) }catch{}; return null; }
+    }
+    function safeSave(key, value){ if (DISABLE_PERSIST) return; try{ localStorage.setItem(key, JSON.stringify(value)) }catch{} }
     function migrateState(v){ if (!v) return null; if (Array.isArray(v)) return v; if (v && Array.isArray(v.groups)) return v.groups; return null; }
 
-    let groups = migrateState(safeLoad(STORAGE_KEY)) || [
-      { id: uid(), name: "グループ 1", positions: [ { id: uid(), ticker: "3350", shares: 100, price: 0 } ] }
-    ];
-    let settings = safeLoad(SETTINGS_KEY) || { provider: "fmp_proxy", apiKey: "", fallback: "on" };
+    // ----- URLプリセット（list=/p=）
+    function parseURLPreset(){
+      const list = Q.get('list');
+      if (list){
+        const positions = list.split(',').map(x=>x.trim()).filter(Boolean).map((item)=>{
+          const [t,s] = item.split(':');
+          const shares = Number(s||0);
+          return { id: uid(), ticker: toHalfWidth(t), shares: Number.isFinite(shares)?shares:0, price: 0, ccy: inferCurrency(t) };
+        });
+        const name = Q.get('gname') || 'リンクから';
+        return [ { id: uid(), name, positions } ];
+      }
+      const p = Q.get('p');
+      if (p){
+        try{
+          const json = b64uDecode(p);
+          const arr = JSON.parse(json);
+          if (Array.isArray(arr)){
+            return arr.map(g=>({
+              id: uid(),
+              name: String(g.name||'グループ'),
+              positions: Array.isArray(g.positions) ? g.positions.map(o=>({ id: uid(), ticker: toHalfWidth(o.ticker||''), shares: Number(o.shares||0), price: 0, ccy: inferCurrency(o.ticker) })) : []
+            }));
+          }
+        }catch(e){ console.warn('p decode error', e); }
+      }
+      return null;
+    }
+    function b64uEncode(str){ const bytes = new TextEncoder().encode(str); let bin=''; bytes.forEach(b=>bin+=String.fromCharCode(b)); return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+    function b64uDecode(b64){ const pad = b64.length%4===2?'==':b64.length%4===3?'=':''; const s=b64.replace(/-/g,'+').replace(/_/g,'/')+pad; const bin=atob(s); const arr=new Uint8Array([...bin].map(c=>c.charCodeAt(0))); return new TextDecoder().decode(arr); }
 
+    // ----- State
+    let groups = parseURLPreset()
+      || migrateState(safeLoad(STORAGE_KEY))
+      || [ { id: uid(), name: 'グループ 1', positions: [ { id: uid(), ticker: '3350', shares: 100, price: 0, ccy:'JPY' } ] } ];
+    let settings = migrateState(safeLoad(SETTINGS_KEY)) || { provider: 'fmp_proxy', apiKey: '', fallback: 'on' };
+
+    // ----- FX cache (USDJPY)
+    const fxCache = { USDJPY: null, ts: 0 };
+    async function ensureUSDJPY(){
+      if (fxCache.USDJPY && Date.now() - fxCache.ts < 60_000) return fxCache.USDJPY; // 1分キャッシュ
+      try{
+        const r = await fetch(`/api/fmp-quote?symbol=USDJPY`);
+        if (!r.ok) throw new Error('FX HTTP '+r.status);
+        const arr = await r.json();
+        const rate = Number(arr?.[0]?.price);
+        if (Number.isFinite(rate) && rate>0){
+          fxCache.USDJPY = rate; fxCache.ts = Date.now();
+          byId('fxNote').textContent = `USDJPY ${rate}`;
+          render(); // 再描画（合計を更新）
+          return rate;
+        }
+      }catch(e){ console.warn('FX fetch failed', e); }
+      return fxCache.USDJPY;
+    }
+    function getFXSyncFor(ccy){
+      if (ccy === 'USD') return fxCache.USDJPY || null;
+      return 1; // JPYは1
+    }
+
+    // ----- Theme
     (function initTheme(){
-      const saved = localStorage.getItem(THEME_KEY) || "dark";
-      document.documentElement.setAttribute("data-theme", saved === "light" ? "light" : "dark");
-      byId("themeBtn").addEventListener("click", () => {
-        const cur = document.documentElement.getAttribute("data-theme") || "dark";
-        const next = (cur === "dark") ? "light" : "dark";
-        document.documentElement.setAttribute("data-theme", next);
+      const saved = localStorage.getItem(THEME_KEY) || 'dark';
+      document.documentElement.setAttribute('data-theme', saved === 'light' ? 'light' : 'dark');
+      byId('themeBtn').addEventListener('click', () => {
+        const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+        const next = (cur === 'dark') ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
         localStorage.setItem(THEME_KEY, next);
       });
     })();
 
-    byId("addGroupBtn").onclick = () => { groups.push({ id: uid(), name: `グループ ${groups.length+1}`, positions: [ { id: uid(), ticker: "", shares: 0, price: 0 } ] }); render(); persist(); };
-    byId("sampleBtn").onclick   = () => { groups = sampleData(); render(); persist(); };
-    byId("exportBtn").onclick   = () => downloadJSON(`portfolio_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`, groups);
-    byId("importBtn").onclick   = () => byId("importInput").click();
-    byId("importInput").addEventListener("change", onImport);
-    byId("clearBtn").onclick    = () => { if (confirm("保存データを削除して初期化しますか？")) { localStorage.removeItem(STORAGE_KEY); groups = [ { id: uid(), name: "グループ 1", positions: [ { id: uid(), ticker: "", shares: 0, price: 0 } ] } ]; render(); } };
-    byId("refreshAllBtn").onclick = async () => { for (const g of groups){ for (const p of g.positions){ if(!p.ticker||!p._els?.fetchBtn) continue; await fetchPriceFill(g,p,p._els.fetchBtn); await sleep(800); } } };
+    // ----- Top Buttons
+    byId('addGroupBtn').onclick = () => { groups.push({ id: uid(), name: `グループ ${groups.length+1}`, positions: [ { id: uid(), ticker: '', shares: 0, price: 0, ccy:'JPY' } ] }); render(); persist(); };
+    byId('sampleBtn').onclick   = () => { groups = sampleData(); render(); persist(); };
+    byId('exportBtn').onclick   = () => downloadJSON(`portfolio_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`, groups);
+    byId('importBtn').onclick   = () => byId('importInput').click();
+    byId('importInput').addEventListener('change', onImport);
+    byId('clearBtn').onclick    = () => { if (confirm('保存データを削除して初期化しますか？')) { localStorage.removeItem(STORAGE_KEY); groups = [ { id: uid(), name: 'グループ 1', positions: [ { id: uid(), ticker: '', shares: 0, price: 0, ccy:'JPY' } ] } ]; render(); } };
+    byId('refreshAllBtn').onclick = async () => {
+      for (const g of groups){
+        for (const p of g.positions){
+          if (!p.ticker || !p._els?.fetchBtn) continue;
+          await fetchPriceFill(g,p,p._els.fetchBtn);
+          await sleep(600);
+        }
+      }
+    };
 
-    const dlg = byId("settingsDialog");
-    byId("settingsBtn").onclick = () => {
-      byId("providerSelect").value = settings.provider;
-      byId("apiKeyInput").value    = settings.apiKey || "";
-      byId("fallbackSelect").value = settings.fallback || "on";
+    // 共有リンク生成
+    byId('shareBtn').onclick = () => {
+      const minimal = groups.map(g=>({ name:g.name, positions:g.positions.map(p=>({ ticker:p.ticker, shares:p.shares })) }));
+      const b64 = b64uEncode(JSON.stringify(minimal));
+      const base = location.origin + location.pathname;
+      const url  = base + '?p=' + b64 + '&autofetch=1';
+      navigator.clipboard?.writeText(url);
+      alert('共有リンクをコピーしました\n\n'+url);
+    };
+
+    // ----- Settings
+    const dlg = byId('settingsDialog');
+    byId('settingsBtn').onclick = () => {
+      byId('providerSelect').value = settings.provider;
+      byId('apiKeyInput').value    = settings.apiKey || '';
+      byId('fallbackSelect').value = settings.fallback || 'on';
       dlg.showModal();
     };
-    byId("saveSettingsBtn").onclick = (e) => {
+    byId('saveSettingsBtn').onclick = (e) => {
       e.preventDefault();
-      settings.provider = byId("providerSelect").value;
-      settings.apiKey   = byId("apiKeyInput").value.trim();
-      settings.fallback = byId("fallbackSelect").value;
+      settings.provider = byId('providerSelect').value;
+      settings.apiKey   = byId('apiKeyInput').value.trim();
+      settings.fallback = byId('fallbackSelect').value;
       safeSave(SETTINGS_KEY, settings);
       dlg.close();
     };
-    byId("test3350Btn").onclick = async (e) => {
+    byId('test3350Btn').onclick = async (e) => {
       e.preventDefault();
-      const r = byId("testConnResult");
-      r.textContent = "テスト中…";
+      const r = byId('testConnResult');
+      r.textContent = 'テスト中…';
       const snap = { ...settings };
-      snap.provider = byId("providerSelect").value;
-      snap.apiKey   = byId("apiKeyInput").value.trim();
-      snap.fallback = byId("fallbackSelect").value;
+      snap.provider = byId('providerSelect').value;
+      snap.apiKey   = byId('apiKeyInput').value.trim();
+      snap.fallback = byId('fallbackSelect').value;
       try{
-        const out = await getLivePrice("3350", snap);
+        const out = await getLivePrice('3350', snap);
         if (out && out.price != null) r.textContent = `OK (${out.source}) 3350=${out.price}`;
-        else r.textContent = "取得不可（キー/上限/銘柄）";
+        else r.textContent = '取得不可（キー/上限/銘柄）';
       }catch(err){
         r.textContent = `失敗：${err?.message || err}`;
       }
     };
 
+    // ----- Rendering
     function render(){
-      const root = byId("groupsRoot");
-      root.innerHTML = "";
+      const root = byId('groupsRoot');
+      root.innerHTML = '';
       let grand = 0;
+
       groups.forEach((g, gi) => {
-        const total = groupTotal(g);
+        // デフォルト通貨の補完
+        g.positions.forEach(p => { if (!p.ccy) p.ccy = inferCurrency(p.ticker); });
+
+        const total = groupTotalJPY(g);
         grand += total;
 
-        const wrap = el("div", { class: "group" });
-        const head = el("div", { class: "group-head" });
-        const titleWrap = el("div", { class: "group-title" });
-        const nameInput = el("input", { value: g.name });
-        nameInput.oninput = (ev) => { g.name = ev.target.value; debouncePersist(); };
-        titleWrap.append(nameInput, el("span", { class: "muted" }, `#${gi+1}`));
+        const wrap = el('div', { class: 'group' });
+        const head = el('div', { class: 'group-head' });
 
-        const headBtns = el("div", { class: "toolbar" });
+        const titleWrap = el('div', { class: 'group-title' });
+        const nameInput = el('input', { value: g.name });
+        nameInput.oninput = (ev) => { g.name = ev.target.value; debouncePersist(); };
+        titleWrap.append(nameInput, el('span', { class: 'muted' }, `#${gi+1}`));
+
+        const headBtns = el('div', { class: 'toolbar' });
         headBtns.append(
-          btn("＋ 銘柄行", "btn-ghost", () => { g.positions.push(newPos()); render(); persist(); }),
-          btn("行を初期化", "btn-outline", () => { g.positions = [newPos()]; render(); persist(); }),
-          btn("削除", "btn-outline", () => { groups = groups.filter(x => x.id !== g.id); render(); persist(); })
+          btn('＋ 銘柄行', 'btn-ghost', () => { g.positions.push(newPos()); render(); persist(); }),
+          btn('行を初期化', 'btn-outline', () => { g.positions = [newPos()]; render(); persist(); }),
+          btn('削除', 'btn-outline', () => { groups = groups.filter(x => x.id !== g.id); render(); persist(); })
         );
         head.append(titleWrap, headBtns);
         wrap.append(head);
 
-        const table = el("table");
-        table.append(thead(["ティッカー / 銘柄名","株数","株価 (円)","金額",""]));
-        const body = el("tbody");
+        const table = el('table');
+        table.append(thead(['ティッカー / 銘柄名','株数','株価 (通貨)','金額（円換算）','']));
+        const body = el('tbody');
         g.positions.forEach(p => body.append(row(g, p)));
         table.append(body, tfoot(total));
 
         wrap.append(table);
         root.append(wrap);
       });
-      byId("grandTotal").textContent = yen.format(grand);
+
+      byId('grandTotal').textContent = yen.format(grand);
+      if (fxCache.USDJPY) byId('fxNote').textContent = `USDJPY ${fxCache.USDJPY}`;
     }
 
     function row(group, pos){
-      const tr = el("tr");
-      const tdTicker = el("td");
-      const inTicker = el("input", { type:"text", value: pos.ticker, placeholder:"例: 3350 / 7203 / AAPL" });
-      inTicker.oninput = (e)=>{ pos.ticker = e.target.value; debouncePersist(); };
+      const tr = el('tr');
+
+      const tdTicker = el('td');
+      const inTicker = el('input', { type:'text', value: pos.ticker, placeholder:'例: 3350 / 7203 / AAPL' });
+      inTicker.oninput = (e)=>{ pos.ticker = e.target.value; pos.ccy = inferCurrency(pos.ticker); render(); debouncePersist(); };
       tdTicker.append(inTicker);
 
-      const tdShares = el("td");
-      const inShares = el("input", { type:"number", min:"0", step:"1", value: safeNumInput(pos.shares), style:"text-align:right" });
-      inShares.oninput = (e)=>{ pos.shares = parseFloat(e.target.value || "0"); render(); debouncePersist(); };
+      const tdShares = el('td');
+      const inShares = el('input', { type:'number', min:'0', step:'1', value: safeNumInput(pos.shares), style:'text-align:right' });
+      inShares.oninput = (e)=>{ pos.shares = parseFloat(e.target.value || '0'); render(); debouncePersist(); };
       tdShares.append(inShares);
 
-      const tdPrice = el("td");
-      const inPrice = el("input", { type:"number", min:"0", step:"0.01", value: safeNumInput(pos.price), style:"text-align:right" });
-      inPrice.oninput = (e)=>{ pos.price = parseFloat(e.target.value || "0"); render(); debouncePersist(); };
-      const fetchBtn = btn("🔄 価格取得", "btn-outline", async () => { await fetchPriceFill(group, pos, fetchBtn); });
-      const statusSpan = el("span", { class: "chip muted", style:"margin-left:6px" }, "待機中");
-      const tools = el("div", { class:"toolbar", style:"margin-top:6px" });
-      tools.append(fetchBtn, statusSpan);
+      const tdPrice = el('td');
+      const inPrice = el('input', { type:'number', min:'0', step:'0.01', value: safeNumInput(pos.price), style:'text-align:right' });
+      inPrice.oninput = (e)=>{ pos.price = parseFloat(e.target.value || '0'); render(); debouncePersist(); };
+      const fetchBtn = btn('🔄 価格取得', 'btn-outline', async () => { await fetchPriceFill(group, pos, fetchBtn); });
+      const statusSpan = el('span', { class: 'chip muted', style:'margin-left:6px' }, '待機中');
+      const ccyChip    = el('span', { class: 'chip muted', style:'margin-left:6px' }, pos.ccy || inferCurrency(pos.ticker));
+      const tools = el('div', { class:'toolbar', style:'margin-top:6px' });
+      tools.append(fetchBtn, statusSpan, ccyChip);
       tdPrice.append(inPrice, tools);
 
-      const tdAmt = el("td", {}, yen.format(num(pos.shares) * num(pos.price)));
-      const tdDel = el("td", { style:"text-align:right" });
-      tdDel.append(btn("削除", "btn-ghost", () => { group.positions = group.positions.filter(x=>x.id!==pos.id); render(); persist(); }));
+      const tdAmt = el('td', {});
+      const amt = amountJPY(pos);
+      tdAmt.textContent = amt != null ? yen.format(amt) : '—';
+      pos._els = { inPrice, statusSpan, fetchBtn, ccyChip, tdAmt };
 
-      pos._els = { inPrice, statusSpan, fetchBtn };
+      const tdDel = el('td', { style:'text-align:right' });
+      tdDel.append(btn('削除', 'btn-ghost', () => { group.positions = group.positions.filter(x=>x.id!==pos.id); render(); persist(); }));
+
       tr.append(tdTicker, tdShares, tdPrice, tdAmt, tdDel);
       return tr;
     }
 
-    function thead(labels){ const thead = el("thead"), tr = el("tr"); labels.forEach(l=>tr.append(el("th", {}, l))); thead.append(tr); return thead; }
+    function thead(labels){ const thead = el('thead'), tr = el('tr'); labels.forEach(l=>tr.append(el('th', {}, l))); thead.append(tr); return thead; }
     function tfoot(total){
-      const tf = el("tfoot"), tr = el("tr"), td = el("td", { colSpan:"5" });
-      const inner = el("div", { style:"display:flex;justify-content:space-between;align-items:center;padding:10px 0" });
-      inner.append(btn("＋ 行を追加","btn-outline", () => {}), el("div", { class:"sum" }, `グループ合計： ${yen.format(total)}`));
+      const tf = el('tfoot'), tr = el('tr'), td = el('td', { colSpan:'5' });
+      const inner = el('div', { style:'display:flex;justify-content:space-between;align-items:center;padding:10px 0' });
+      inner.append(btn('＋ 行を追加','btn-outline', () => {}), el('div', { class:'sum' }, `グループ合計： ${yen.format(total)}`));
       setTimeout(() => {
-        const addBtn = inner.querySelector("button");
+        const addBtn = inner.querySelector('button');
         addBtn.onclick = () => {
-          const groupEl = tf.closest(".group");
-          const index = Array.from(document.querySelectorAll("#groupsRoot .group")).indexOf(groupEl);
+          const groupEl = tf.closest('.group');
+          const index = Array.from(document.querySelectorAll('#groupsRoot .group')).indexOf(groupEl);
           if (index >= 0) { groups[index].positions.push(newPos()); render(); persist(); }
         };
       });
       td.append(inner); tr.append(td); tf.append(tr); return tf;
     }
 
+    // ----- 円換算
+    function amountJPY(pos){
+      const s = num(pos.shares), p = num(pos.price);
+      const c = pos.ccy || inferCurrency(pos.ticker);
+      if (c === 'USD'){
+        const fx = getFXSyncFor('USD'); // nullなら未取得
+        return (fx ? s * p * fx : null);
+      }
+      return s * p; // JPY
+    }
+    function groupTotalJPY(g){
+      return g.positions.reduce((sum, p) => {
+        const a = amountJPY(p);
+        return sum + (a || 0);
+      }, 0);
+    }
+
+    // ----- 価格取得
     async function fetchPriceFill(group, pos, btnEl){
-      const { statusSpan, inPrice } = pos._els || {};
-      setStatus(statusSpan, "取得中…", "warn"); btnEl.disabled = true;
+      const { statusSpan, inPrice, ccyChip, tdAmt } = pos._els || {};
+      setStatus(statusSpan, '取得中…', 'warn'); btnEl.disabled = true;
       try{
         const out = await getLivePrice(pos.ticker);
         if (out && out.price != null) {
           pos.price = round2(out.price);
+          pos.ccy   = out.currency || inferCurrency(pos.ticker);
           inPrice.value = String(pos.price);
+          ccyChip.textContent = pos.ccy;
+          if (pos.ccy === 'USD') await ensureUSDJPY(); // 先にFX確保
           render(); persist();
-          setStatus(statusSpan, `OK: ${out.source}`, "ok");
+          setStatus(statusSpan, `OK: ${out.source}`, 'ok');
         } else {
-          setStatus(statusSpan, "取得できません", "err");
+          setStatus(statusSpan, '取得できません', 'err');
         }
       }catch(err){
         console.error(err);
-        setStatus(statusSpan, err?.message || "エラー", "err");
+        setStatus(statusSpan, err?.message || 'エラー', 'err');
         alert(`価格取得に失敗しました: ${err?.message || err}`);
       } finally { btnEl.disabled = false; }
     }
 
-    async function getLivePrice(userInput){
-      const cfg = settings;
-      const primary = cfg.provider || "fmp_proxy";
-      const doFallback = (cfg.fallback||"on") === "on";
-      const order = primary === "fmp_proxy" ? ["fmp_proxy","finnhub"] : ["finnhub","fmp_proxy"];
+    async function getLivePrice(userInput, snap){
+      const cfg = snap || settings;
+      const primary = cfg.provider || 'fmp_proxy';
+      const doFallback = (cfg.fallback||'on') === 'on';
+      const order = primary === 'fmp_proxy' ? ['fmp_proxy','finnhub'] : ['finnhub','fmp_proxy'];
 
       for (const prov of order){
         if (!doFallback && prov !== primary) break;
         try{
-          if (prov === "fmp_proxy"){
+          if (prov === 'fmp_proxy'){
             const cands = fmpCandidates(userInput);
             for (const sym of cands){
-              const url = `/api/fmp-quote?symbol=${encodeURIComponent(sym)}`; // キーはサーバー側
+              const url = `/api/fmp-quote?symbol=${encodeURIComponent(sym)}`; // サーバー側キー
               const res = await fetch(url);
               if (!res.ok) throw new Error(`FMP Proxy HTTP ${res.status}`);
               const arr = await res.json();
               if (Array.isArray(arr) && arr.length){
                 const r = arr[0] || {}; const p = Number(r.price); const pc = Number(r.previousClose);
-                if (Number.isFinite(p) && p > 0) return { price: p, source: `FMP Proxy (${sym})` };
-                if (Number.isFinite(pc) && pc > 0) return { price: pc, source: `FMP Proxy prevClose (${sym})` };
+                const price = Number.isFinite(p)&&p>0 ? p : (Number.isFinite(pc)&&pc>0 ? pc : null);
+                if (price!=null){
+                  const currency = /\.T$/i.test(sym) ? 'JPY' : 'USD';
+                  return { price, source: `FMP Proxy (${sym})`, currency };
+                }
               }
             }
-          } else if (prov === "finnhub"){
-            if (!cfg.apiKey) throw new Error("Finnhub の APIキーを設定してください");
+          } else if (prov === 'finnhub'){
+            if (!cfg.apiKey) throw new Error('Finnhub の APIキーを設定してください');
             const cands = finnhubCandidates(userInput);
             for (const sym of cands){
               const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(cfg.apiKey)}`;
@@ -358,31 +487,41 @@ File: index.html
               if (!res.ok) throw new Error(`Finnhub HTTP ${res.status}`);
               const j = await res.json();
               const c = Number(j.c), pc = Number(j.pc);
-              if (Number.isFinite(c) && c > 0) return { price: c, source: `Finnhub (${sym})` };
-              if (Number.isFinite(pc) && pc > 0) return { price: pc, source: `Finnhub prevClose (${sym})` };
+              if ((Number.isFinite(c) && c > 0) || (Number.isFinite(pc) && pc > 0)){
+                const price = (Number.isFinite(c) && c>0) ? c : pc;
+                const currency = sym.startsWith('TSE:') ? 'JPY' : 'USD';
+                return { price, source: `Finnhub (${sym})`, currency };
+              }
             }
           }
-        }catch(e){ /* 次の候補へ */ }
+        }catch(e){ /* try next */ }
       }
-      return { price: null, source: null };
+      return { price: null, source: null, currency: null };
     }
 
-    function newPos(){ return { id: uid(), ticker: "", shares: 0, price: 0 }; }
+    // ----- misc utils
+    function newPos(){ return { id: uid(), ticker: '', shares: 0, price: 0, ccy:'JPY' }; }
     function num(v){ return Number.isFinite(v) ? Number(v) : 0; }
     function round2(x){ return Math.round(Number(x) * 100) / 100; }
-    function safeNumInput(v){ return Number.isFinite(v) ? String(v) : ""; }
+    function safeNumInput(v){ return Number.isFinite(v) ? String(v) : ''; }
     function byId(id){ return document.getElementById(id); }
-    function groupTotal(g){ return g.positions.reduce((s, p) => s + num(p.shares) * num(p.price), 0); }
     function setStatus(elm, text, kind){ if (!elm) return; elm.textContent = text; elm.className = `chip ${kind==='ok'?'status-ok':kind==='err'?'status-err':'status-warn'}`; }
-    function el(tag, props = {}, text){ const n = document.createElement(tag); for (const k in props){ if (k === "class") n.className = props[k]; else if (k === "style") n.setAttribute("style", props[k]); else n[k] = props[k]; } if (text != null) n.textContent = text; return n; }
-    function btn(text, cls, onClick){ const b = el("button", { class:`btn ${cls}` }, text); b.onclick = onClick; return b; }
+    function el(tag, props = {}, text){ const n = document.createElement(tag); for (const k in props){ if (k === 'class') n.className = props[k]; else if (k === 'style') n.setAttribute('style', props[k]); else n[k] = props[k]; } if (text != null) n.textContent = text; return n; }
+    function btn(text, cls, onClick){ const b = el('button', { class:`btn ${cls}` }, text); b.onclick = onClick; return b; }
     function persist(){ safeSave(STORAGE_KEY, groups); }
     let persistTimer = null; function debouncePersist(){ clearTimeout(persistTimer); persistTimer = setTimeout(persist, 300); }
-    function downloadJSON(filename, obj){ const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
-    function onImport(e){ const file = e.target.files && e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { try{ const data = JSON.parse(String(reader.result)); const mig = migrateState(data); if (mig) { groups = mig; render(); persist(); } else alert("不正なJSONです。"); } catch { alert("読み込みに失敗しました。"); } }; reader.readAsText(file); e.target.value = ""; }
-    function sampleData(){ return [ { id: uid(), name: "国内株", positions: [ { id: uid(), ticker: "3350", shares: 100, price: 0 }, { id: uid(), ticker: "7203", shares: 200, price: 0 } ] }, { id: uid(), name: "米国株", positions: [ { id: uid(), ticker: "AAPL", shares: 10, price: 0 }, { id: uid(), ticker: "NVDA", shares: 5, price: 0 } ] } ]; }
+    function downloadJSON(filename, obj){ const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
+    function onImport(e){ const file = e.target.files && e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { try{ const data = JSON.parse(String(reader.result)); const mig = migrateState(data); if (mig) { groups = mig; render(); persist(); } else alert('不正なJSONです。'); } catch { alert('読み込みに失敗しました。'); } }; reader.readAsText(file); e.target.value = ''; }
+    function sampleData(){ return [ { id: uid(), name: '国内株', positions: [ { id: uid(), ticker: '3350', shares: 100, price: 0, ccy:'JPY' }, { id: uid(), ticker: '7203', shares: 200, price: 0, ccy:'JPY' } ] }, { id: uid(), name: '米国株', positions: [ { id: uid(), ticker: 'AAPL', shares: 10, price: 0, ccy:'USD' }, { id: uid(), ticker: 'NVDA', shares: 5, price: 0, ccy:'USD' } ] } ]; }
 
+    // 初期描画
     render();
+
+    // URLで米株が含まれていそうならFXを先取り
+    if (groups.some(g => g.positions.some(p => (p.ccy||inferCurrency(p.ticker))==='USD'))) {
+      ensureUSDJPY();
+    }
+    if (AUTO_FETCH){ byId('refreshAllBtn').click(); }
   </script>
 </body>
 </html>
